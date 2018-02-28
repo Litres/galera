@@ -35,17 +35,25 @@ galera::Wsdb::Wsdb()
     trx_pool_  (TrxHandle::LOCAL_STORAGE_SIZE(), 512, "LocalTrxHandle"),
     trx_map_     (),
     conn_trx_map_(),
+#ifdef HAVE_PSI_INTERFACE
+    trx_mutex_   (WSREP_PFS_INSTR_TAG_WSDB_TRX_MUTEX),
+#else
     trx_mutex_   (),
+#endif /* HAVE_PSI_INTERFACE */
     conn_map_    (),
+#ifdef HAVE_PSI_INTERFACE
+    conn_mutex_  (WSREP_PFS_INSTR_TAG_WSDB_CONN_MUTEX)
+#else
     conn_mutex_  ()
+#endif /* HAVE_PSI_INTERFACE */
 {}
 
 
 galera::Wsdb::~Wsdb()
 {
-    log_info << "wsdb trx map usage " << trx_map_.size()
+    log_debug << "wsdb trx map usage " << trx_map_.size()
              << " conn query map usage " << conn_map_.size();
-    log_info << trx_pool_;
+    log_debug << trx_pool_;
 
     // With debug builds just print trx and query maps to stderr
     // and don't clean up to let valgrind etc to detect leaks.
@@ -66,6 +74,12 @@ galera::Wsdb::find_trx(wsrep_trx_id_t const trx_id)
     gu::Lock lock(trx_mutex_);
 
     galera::TrxHandle* trx;
+    /* trx-id = 0 is safe-guard condition.
+    trx-id is generally assigned from thd->query-id
+    and query-id default is 0. If background thread
+    try to assign set wsrep_next_trx_id before setting
+    query-id we will hit the said assert. */
+    assert(trx_id != 0);
 
     if (trx_id != wsrep_trx_id_t(-1))
     {

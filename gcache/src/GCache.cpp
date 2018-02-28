@@ -39,8 +39,13 @@ namespace gcache
         :
         config    (cfg),
         params    (config, data_dir),
+#ifdef HAVE_PSI_INTERFACE
+        mtx       (WSREP_PFS_INSTR_TAG_GCACHE_MUTEX),
+        cond      (WSREP_PFS_INSTR_TAG_GCACHE_CONDVAR),
+#else
         mtx       (),
         cond      (),
+#endif /* HAVE_PSI_INTERFACE */
         seqno2ptr (),
         gid       (),
         mem       (params.mem_size(), seqno2ptr),

@@ -45,6 +45,11 @@ namespace galera
             wsrep_seqno_t finished();
             void          run();
 
+            wsrep_seqno_t current_seqno()   { return current_seqno_; }
+            wsrep_seqno_t first_seqno()     { return first_seqno_; }
+            wsrep_seqno_t last_seqno()      { return last_seqno_; }
+            bool          running()         { return running_; }
+
         private:
 
             void interrupt();
@@ -54,17 +59,34 @@ namespace galera
             asio::io_service                              io_service_;
             asio::ip::tcp::acceptor                       acceptor_;
             asio::ssl::context                            ssl_ctx_;
+#ifdef HAVE_PSI_INTERFACE
+            gu::MutexWithPFS                              mutex_;
+            gu::CondWithPFS                               cond_;
+#else
             gu::Mutex                                     mutex_;
             gu::Cond                                      cond_;
+#endif /* HAVE_PSI_INTERFACE */
 
             class Consumer
             {
             public:
 
+#ifdef HAVE_PSI_INTERFACE
+                Consumer()
+                    :
+                    cond_(WSREP_PFS_INSTR_TAG_IST_CONSUMER_CONDVAR),
+                    trx_(0)
+                { }
+#else
                 Consumer() : cond_(), trx_(0) { }
+#endif
                 ~Consumer() { }
 
+#ifdef HAVE_PSI_INTERFACE
+                gu::CondWithPFS&  cond()        { return cond_; }
+#else
                 gu::Cond&  cond()              { return cond_; }
+#endif /* HAVE_PSI_INTERFACE */
                 void       trx(TrxHandle* trx) { trx_ = trx;   }
                 TrxHandle* trx() const         { return trx_;  }
 
@@ -74,12 +96,17 @@ namespace galera
                 Consumer(const Consumer&);
                 Consumer& operator=(const Consumer&);
 
+#ifdef HAVE_PSI_INTERFACE
+                gu::CondWithPFS   cond_;
+#else
                 gu::Cond   cond_;
+#endif /* HAVE_PSI_INTERFACE */
                 TrxHandle* trx_;
             };
 
             std::stack<Consumer*> consumers_;
             wsrep_seqno_t         current_seqno_;
+            wsrep_seqno_t         first_seqno_;
             wsrep_seqno_t         last_seqno_;
             gu::Config&           conf_;
             TrxHandle::SlavePool& trx_pool_;
@@ -143,7 +170,12 @@ namespace galera
             AsyncSenderMap(GCS_IMPL& gcs, gcache::GCache& gcache)
                 :
                 senders_(),
+#ifdef HAVE_PSI_INTERFACE
+                monitor_(WSREP_PFS_INSTR_TAG_ASYNC_SENDER_MONITOR_MUTEX,
+                         WSREP_PFS_INSTR_TAG_ASYNC_SENDER_MONITOR_CONDVAR),
+#else
                 monitor_(),
+#endif /* HAVE_PSI_INTERFACE */
                 gcache_(gcache) { }
             void run(const gu::Config& conf,
                      const std::string& peer,

@@ -26,7 +26,11 @@ SavedState::SavedState  (const std::string& file) :
     safe_to_bootstrap_(true),
     unsafe_       (0),
     corrupt_      (false),
+#ifdef HAVE_PSI_INTERFACE
+    mtx_          (WSREP_PFS_INSTR_TAG_SAVED_STATE_MUTEX),
+#else
     mtx_          (),
+#endif /* HAVE_PSI_INTERFACE */
     written_uuid_ (uuid_),
     current_len_  (0),
     total_marks_  (0),
@@ -42,6 +46,7 @@ SavedState::SavedState  (const std::string& file) :
     if (ifs.fail())
     {
         log_warn << "Could not open state file for reading: '" << file << '\'';
+        log_warn << "No persistent state found. Bootstraping with default state";
     }
 
     fs_ = fopen(file.c_str(), "a");

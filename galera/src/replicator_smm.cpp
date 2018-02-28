@@ -47,10 +47,14 @@ apply_trx_ws(void*                    recv_ctx,
 
                 if (err > 0)
                 {
+                    /* It is safe to call commit_cb w/o entering commit monitor
+                    as callback is with commit = false there-by invoking
+                    rollback action. */
                     wsrep_bool_t unused(false);
                     wsrep_cb_status const rcode(
                         commit_cb(
                             recv_ctx,
+                            NULL,
                             TrxHandle::trx_flags_to_wsrep_flags(trx.flags()),
                             &meta,
                             &unused,
@@ -117,7 +121,8 @@ std::ostream& galera::operator<<(std::ostream& os, ReplicatorSMM::State state)
 
 galera::ReplicatorSMM::ReplicatorSMM(const struct wsrep_init_args* args)
     :
-    init_lib_           (reinterpret_cast<gu_log_cb_t>(args->logger_cb)),
+    init_lib_           (reinterpret_cast<gu_log_cb_t>(args->logger_cb),
+                         reinterpret_cast<gu_pfs_instr_cb_t>(args->pfs_instr_cb)),
     config_             (),
     init_config_        (config_, args->node_address, args->data_dir),
     parse_options_      (*this, config_, args->options),
@@ -153,8 +158,13 @@ galera::ReplicatorSMM::ReplicatorSMM(const struct wsrep_init_args* args)
     sst_donor_          (),
     sst_uuid_           (WSREP_UUID_UNDEFINED),
     sst_seqno_          (WSREP_SEQNO_UNDEFINED),
+#ifdef HAVE_PSI_INTERFACE
+    sst_mutex_          (WSREP_PFS_INSTR_TAG_SST_MUTEX),
+    sst_cond_           (WSREP_PFS_INSTR_TAG_SST_CONDVAR),
+#else
     sst_mutex_          (),
     sst_cond_           (),
+#endif /* HAVE_PSI_INTERFACE */
     sst_retry_sec_      (1),
     gcache_             (config_, config_.get(BASE_DIR)),
     gcs_                (config_, gcache_, proto_max_, args->proto_ver,
@@ -168,9 +178,18 @@ galera::ReplicatorSMM::ReplicatorSMM(const struct wsrep_init_args* args)
     ist_senders_        (gcs_, gcache_),
     wsdb_               (),
     cert_               (config_, service_thd_, gcache_),
+#ifdef HAVE_PSI_INTERFACE
+    local_monitor_      (WSREP_PFS_INSTR_TAG_LOCAL_MONITOR_MUTEX,
+                         WSREP_PFS_INSTR_TAG_LOCAL_MONITOR_CONDVAR),
+    apply_monitor_      (WSREP_PFS_INSTR_TAG_APPLY_MONITOR_MUTEX,
+                         WSREP_PFS_INSTR_TAG_APPLY_MONITOR_CONDVAR),
+    commit_monitor_     (WSREP_PFS_INSTR_TAG_COMMIT_MONITOR_MUTEX,
+                         WSREP_PFS_INSTR_TAG_COMMIT_MONITOR_CONDVAR),
+#else
     local_monitor_      (),
     apply_monitor_      (),
     commit_monitor_     (),
+#endif /* HAVE_PSI_INTERFACE */
     causal_read_timeout_(config_.get(Param::causal_read_timeout)),
     receivers_          (),
     replicated_         (),
@@ -186,7 +205,11 @@ galera::ReplicatorSMM::ReplicatorSMM(const struct wsrep_init_args* args)
     causal_reads_       (),
     preordered_id_      (),
     incoming_list_      (""),
+#ifdef HAVE_PSI_INTERFACE
+    incoming_mutex_     (WSREP_PFS_INSTR_TAG_INCOMING_MUTEX),
+#else
     incoming_mutex_     (),
+#endif /* HAVE_PSI_INTERFACE */
     wsrep_stats_        ()
 {
     /*
@@ -273,7 +296,7 @@ galera::ReplicatorSMM::ReplicatorSMM(const struct wsrep_init_args* args)
 
 galera::ReplicatorSMM::~ReplicatorSMM()
 {
-    log_info << "dtor state: " << state_();
+    log_debug << "dtor state: " << state_();
     switch (state_())
     {
     case S_CONNECTED:
@@ -470,9 +493,14 @@ void galera::ReplicatorSMM::apply_trx(void* recv_ctx, TrxHandle* trx)
     /* at this point any exception in apply_trx_ws() is fatal, not
      * catching anything. */
 
-    if (gu_likely(co_mode_ != CommitOrder::BYPASS))
+    TrxHandle* commit_trx_handle = trx;
+    if (gu_likely(co_mode_ != CommitOrder::BYPASS) && trx->is_toi())
     {
+        /* TOI action are fully serialized so it is make sense to
+        enforce commit ordering at this stage. For non-TOI action
+        commit ordering is delayed to take advantage of full parallelism. */
         gu_trace(commit_monitor_.enter(co));
+        commit_trx_handle = NULL;
     }
     trx->set_state(TrxHandle::S_COMMITTING);
 
@@ -480,6 +508,7 @@ void galera::ReplicatorSMM::apply_trx(void* recv_ctx, TrxHandle* trx)
     wsrep_cb_status_t const rcode(
         commit_cb_(
             recv_ctx,
+            commit_trx_handle,
             TrxHandle::trx_flags_to_wsrep_flags(trx->flags()),
             &meta,
             &exit_loop,
@@ -488,9 +517,12 @@ void galera::ReplicatorSMM::apply_trx(void* recv_ctx, TrxHandle* trx)
     if (gu_unlikely (rcode != WSREP_CB_SUCCESS))
         gu_throw_fatal << "Commit failed. Trx: " << trx;
 
-    if (gu_likely(co_mode_ != CommitOrder::BYPASS))
+    if (gu_likely(co_mode_ != CommitOrder::BYPASS) && trx->is_toi())
     {
-        commit_monitor_.leave(co);
+        gu_trace(commit_monitor_.leave(co));
+
+        // Allow tests to block the applier thread using the DBUG facilities
+        GU_DBUG_SYNC_WAIT("sync.apply_trx.after_commit_leave");
     }
     trx->set_state(TrxHandle::S_COMMITTED);
 
@@ -676,6 +708,12 @@ wsrep_status_t galera::ReplicatorSMM::replicate(TrxHandle* trx,
     else
     {
         retval = WSREP_OK;
+        if (meta != 0)
+        {
+            meta->gtid.uuid  = state_uuid_;
+            meta->gtid.seqno = trx->global_seqno();
+            meta->depends_on = trx->depends_seqno();
+        }
     }
 
     assert(trx->last_seen_seqno() >= 0);
@@ -755,17 +793,42 @@ galera::ReplicatorSMM::abort_trx(TrxHandle* trx)
 wsrep_status_t galera::ReplicatorSMM::pre_commit(TrxHandle*        trx,
                                                  wsrep_trx_meta_t* meta)
 {
+    /* Replicate and pre-commit action are 2 different actions now.
+    This means transaction can get aborted on completion of replicate
+    before pre-commit action start. This condition capture that scenario
+    and ensure that resources are released. */
+    if (trx->state() == TrxHandle::S_MUST_ABORT)
+    {
+        wsrep_status_t retval(WSREP_PRECOMMIT_ABORT);
+        retval = cert_for_aborted(trx);
+
+        if (retval != WSREP_BF_ABORT)
+        {
+            LocalOrder  lo(*trx);
+            ApplyOrder  ao(*trx);
+            CommitOrder co(*trx, co_mode_);
+            local_monitor_.self_cancel(lo);
+            apply_monitor_.self_cancel(ao);
+            if (co_mode_ !=CommitOrder::BYPASS) commit_monitor_.self_cancel(co);
+        }
+        else if (meta != 0)
+        {
+            meta->gtid.uuid  = state_uuid_;
+            meta->gtid.seqno = trx->global_seqno();
+            meta->depends_on = trx->depends_seqno();
+        }
+
+        if (trx->state() == TrxHandle::S_MUST_ABORT)
+            trx->set_state(TrxHandle::S_ABORTING);
+
+        return retval;
+    }
+
     assert(trx->state() == TrxHandle::S_REPLICATING);
     assert(trx->local_seqno()  > -1);
     assert(trx->global_seqno() > -1);
     assert(trx->last_seen_seqno() >= 0);
 
-    if (meta != 0)
-    {
-        meta->gtid.uuid  = state_uuid_;
-        meta->gtid.seqno = trx->global_seqno();
-        meta->depends_on = trx->depends_seqno();
-    }
     // State should not be checked here: If trx has been replicated,
     // it has to be certified and potentially applied. #528
     // if (state_() < S_JOINED) return WSREP_TRX_FAIL;
@@ -909,6 +972,7 @@ wsrep_status_t galera::ReplicatorSMM::replay_trx(TrxHandle* trx, void* trx_ctx)
             wsrep_cb_status_t rcode(
                 commit_cb_(
                     trx_ctx,
+                    NULL,
                     TrxHandle::trx_flags_to_wsrep_flags(trx->flags()),
                     &meta,
                     &unused,
@@ -954,7 +1018,7 @@ wsrep_status_t galera::ReplicatorSMM::replay_trx(TrxHandle* trx, void* trx_ctx)
 }
 
 
-wsrep_status_t galera::ReplicatorSMM::post_commit(TrxHandle* trx)
+wsrep_status_t galera::ReplicatorSMM::interim_commit(TrxHandle* trx)
 {
     if (trx->state() == TrxHandle::S_MUST_ABORT)
     {
@@ -973,7 +1037,46 @@ wsrep_status_t galera::ReplicatorSMM::post_commit(TrxHandle* trx)
     assert(trx->local_seqno() > -1 && trx->global_seqno() > -1);
 
     CommitOrder co(*trx, co_mode_);
-    if (co_mode_ != CommitOrder::BYPASS) commit_monitor_.leave(co);
+    if (co_mode_ != CommitOrder::BYPASS)
+    {
+        commit_monitor_.leave(co);
+
+        // Allow tests to block the applier thread using the DBUG facilities
+        GU_DBUG_SYNC_WAIT("sync.interim_commit.after_commit_leave");
+    }
+    trx->mark_interim_committed(true);
+
+    return WSREP_OK;
+}
+
+
+wsrep_status_t galera::ReplicatorSMM::post_commit(TrxHandle* trx)
+{
+    if (trx->state() == TrxHandle::S_MUST_ABORT)
+    {
+        // This is possible in case of ALG: BF applier BF aborts
+        // trx that has already grabbed commit monitor and is committing.
+        // However, this should be acceptable assuming that commit
+        // operation does not reserve any more resources and is able
+        // to release already reserved resources.
+        log_debug << "trx was BF aborted during commit: " << *trx;
+        // manipulate state to avoid crash
+        trx->set_state(TrxHandle::S_MUST_REPLAY);
+        trx->set_state(TrxHandle::S_REPLAYING);
+    }
+    assert(trx->state() == TrxHandle::S_COMMITTING ||
+           trx->state() == TrxHandle::S_REPLAYING);
+    assert(trx->local_seqno() > -1 && trx->global_seqno() > -1);
+
+    if (!(trx->is_interim_committed()))
+    {
+        CommitOrder co(*trx, co_mode_);
+        if (co_mode_ != CommitOrder::BYPASS) commit_monitor_.leave(co);
+
+        // Allow tests to block the applier thread using the DBUG facilities
+        GU_DBUG_SYNC_WAIT("sync.post_commit.after_commit_leave");
+    }
+    trx->mark_interim_committed(false);
 
     ApplyOrder ao(*trx);
     report_last_committed(cert_.set_trx_committed(trx));
@@ -1048,7 +1151,7 @@ wsrep_status_t galera::ReplicatorSMM::causal_read(wsrep_gtid_t* gtid)
     }
     catch (gu::Exception& e)
     {
-        log_debug << "monitor wait failed for causal read: " << e.what();
+        log_info << "monitor wait failed for causal read (repl.causal_read_timeout): " << e.what();
         return WSREP_TRX_FAIL;
     }
 }
@@ -1118,7 +1221,11 @@ wsrep_status_t galera::ReplicatorSMM::to_isolation_end(TrxHandle* trx)
     log_debug << "Done executing TO isolated action: " << *trx;
 
     CommitOrder co(*trx, co_mode_);
-    if (co_mode_ != CommitOrder::BYPASS) commit_monitor_.leave(co);
+    if (co_mode_ != CommitOrder::BYPASS)
+    {
+        commit_monitor_.leave(co);
+        GU_DBUG_SYNC_WAIT("sync.to_isolation_end.after_commit_leave");
+    }
     ApplyOrder ao(*trx);
     report_last_committed(cert_.set_trx_committed(trx));
     apply_monitor_.leave(ao);
@@ -1284,6 +1391,14 @@ void galera::ReplicatorSMM::process_trx(void* recv_ctx, TrxHandle* trx)
     assert(trx->last_seen_seqno() >= 0);
     assert(trx->depends_seqno() == -1);
     assert(trx->state() == TrxHandle::S_REPLICATING);
+
+    // If the SST has been canceled, then ignore any other
+    // incoming transactions, as the node should be shutting down
+    if (sst_state_ == SST_CANCELED)
+    {
+        log_info << "Ignorng trx(" << trx->global_seqno() << ") due to SST failure";
+        return;
+    }
 
     wsrep_status_t const retval(cert_and_catch(trx));
 

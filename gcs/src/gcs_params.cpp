@@ -24,8 +24,8 @@ const char* const GCS_PARAMS_MAX_THROTTLE      = "gcs.max_throttle";
 const char* const GCS_PARAMS_SM_DUMP           = "gcs.sm_dump";
 #endif /* GCS_SM_DEBUG */
 
-static const char* const GCS_PARAMS_FC_FACTOR_DEFAULT         = "1.0";
-static const char* const GCS_PARAMS_FC_LIMIT_DEFAULT          = "16";
+static const char* const GCS_PARAMS_FC_FACTOR_DEFAULT         = "1";
+static const char* const GCS_PARAMS_FC_LIMIT_DEFAULT          = "100";
 static const char* const GCS_PARAMS_FC_MASTER_SLAVE_DEFAULT   = "no";
 static const char* const GCS_PARAMS_FC_DEBUG_DEFAULT          = "0";
 static const char* const GCS_PARAMS_SYNC_DONOR_DEFAULT        = "no";

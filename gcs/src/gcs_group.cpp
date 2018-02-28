@@ -353,7 +353,7 @@ group_post_state_exchange (gcs_group_t* group)
              "\n\tversion    = %u,"
              "\n\tcomponent  = %s,"
              "\n\tconf_id    = %lld,"
-             "\n\tmembers    = %d/%d (joined/total),"
+             "\n\tmembers    = %d/%d (primary/total),"
              "\n\tact_id     = %lld,"
              "\n\tlast_appl. = %lld,"
              "\n\tprotocols  = %d/%d/%d (gcs/repl/appl),"
@@ -1191,7 +1191,8 @@ group_find_ist_donor (const gcs_group_t* const group,
 
     if (ist_seqno < safe_ist_seqno) {
         // unsafe to perform ist.
-        gu_debug("fallback to sst. ist_seqno < safe_ist_seqno");
+        gu_info("may fallback to sst. ist_seqno [%lld] < safe_ist_seqno [%lld]",
+                (long long) ist_seqno, (long long) safe_ist_seqno);
         return -1;
     }
 
@@ -1646,3 +1647,31 @@ gcs_group_get_status (gcs_group_t* group, gu::Status& status)
 
     status.insert("desync_count", gu::to_string(desync_count));
 }
+
+void
+gcs_group_fetch_pfs_info(
+    const gcs_group_t* group,
+    wsrep_node_info_t* entries,
+    uint32_t size)
+{
+    if (size < (uint32_t) group->num)
+      return;
+
+    for (uint i= 0; i < (uint32_t) group->num; i++)
+    {
+        const gcs_node_t& node(group->nodes[i]);
+
+        strncpy(entries[i].host_name, node.name, WSREP_HOSTNAME_LENGTH);
+
+        strncpy(entries[i].uuid, node.id, WSREP_UUID_STR_LEN);
+
+        strncpy(
+            entries[i].status,
+            gcs_node_state_to_str(node.status),
+            WSREP_STATUS_LENGTH);
+
+        entries[i].local_index = i;
+        entries[i].segment = node.segment;
+    }
+}
+

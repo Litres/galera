@@ -14,6 +14,14 @@
 #include <errno.h>
 #include <string.h> // strerror()
 
+/* register callback for PFS instrumentation */
+gu_pfs_instr_cb_t pfs_instr_callback = NULL;
+int gu_conf_set_pfs_instr_callback (gu_pfs_instr_cb_t callback)
+{
+  pfs_instr_callback = callback;
+  return 0;
+}
+
 #ifdef GU_DEBUG_MUTEX
 
 int gu_mutex_init_DBG (gu_mutex_t_DBG *m,

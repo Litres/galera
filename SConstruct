@@ -73,6 +73,7 @@ Commandline Options:
     bpostatic=path      a path to static libboost_program_options.a
     extra_sysroot=path  a path to extra development environment (Fink, Homebrew, MacPorts, MinGW)
     bits=[32bit|64bit]
+    psi=[0|1]           instrument galera mutexes/cond-vars using mysql psi (only with pxc-5.7+)
 ''')
 # bpostatic option added on Percona request
 
@@ -140,6 +141,10 @@ tests      = int(ARGUMENTS.get('tests', 1))
 deterministic_tests = int(ARGUMENTS.get('deterministic_tests', 0))
 strict_build_flags = int(ARGUMENTS.get('strict_build_flags', 0))
 
+# parse psi flag option
+psi        = int(ARGUMENTS.get('psi', 0))
+if psi:
+    opt_flags = opt_flags + ' -DHAVE_PSI_INTERFACE'
 
 GALERA_VER = ARGUMENTS.get('version', '3.25')
 GALERA_REV = ARGUMENTS.get('revno', 'XXXX')

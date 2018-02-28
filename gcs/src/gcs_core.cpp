@@ -1250,7 +1250,7 @@ gcs_core_set_pkt_size (gcs_core_t* core, int const pkt_size)
      * size at this level */
     msg_size = std::min(std::max(min_msg_size, pkt_size), msg_size);
 
-    gu_info ("Changing maximum packet size to %d, resulting msg size: %d",
+    gu_debug ("Changing maximum packet size to %d, resulting msg size: %d",
              pkt_size, msg_size);
 
     int ret(msg_size - hdr_size); // message payload
@@ -1377,6 +1377,21 @@ gcs_core_param_get (gcs_core_t* core, const char* key)
     else {
         return NULL;
     }
+}
+
+void
+gcs_core_fetch_pfs_info(
+    gcs_core_t*		core,
+    wsrep_node_info_t*	entries,
+    uint32_t		size)
+{
+    if (gu_mutex_lock(&core->send_lock))
+        gu_throw_fatal << "could not lock mutex";
+    if (core->state < CORE_CLOSED)
+    {
+        gcs_group_fetch_pfs_info(&core->group, entries, size);
+    }
+    gu_mutex_unlock(&core->send_lock);
 }
 
 void gcs_core_get_status(gcs_core_t* core, gu::Status& status)

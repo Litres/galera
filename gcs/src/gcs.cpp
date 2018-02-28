@@ -105,6 +105,7 @@ struct gcs_conn
 {
     long  my_idx;
     long  memb_num;
+    long  non_arb_memb_count;   /* count of non-arb members in cluster */
     char* my_name;
     char* channel;
     char* socket;
@@ -778,6 +779,8 @@ _release_sst_flow_control (gcs_conn_t* conn)
         ret = gu_mutex_lock(&conn->fc_lock);
         if (!ret) {
             ret = gcs_fc_cont_end(conn);
+            if (ret >= 0)
+                gu_info("SST leaving flow control");
         }
         else {
             gu_fatal("failed to lock FC mutex");
@@ -839,7 +842,7 @@ _set_fc_limits (gcs_conn_t* conn)
     /* Killing two birds with one stone: flat FC profile for master-slave setups
      * plus #440: giving single node some slack at some math correctness exp.*/
     double const fn
-        (conn->params.fc_master_slave ? 1.0 : sqrt(double(conn->memb_num)));
+        (conn->params.fc_master_slave ? 1.0 : sqrt(double(conn->non_arb_memb_count)));
 
     conn->upper_limit = conn->params.fc_base_limit * fn + .5;
     conn->lower_limit = conn->upper_limit * conn->params.fc_resume_factor + .5;
@@ -931,6 +934,21 @@ gcs_handle_act_conf (gcs_conn_t* conn, const void* action)
             conn->stop_count  = 0;
             conn->conf_id     = conf->conf_id;
             conn->memb_num    = conf->memb_num;
+
+            // Count the number of non-arb members, this will be
+            // used for the fc_limit calculations
+            long    non_arb_memb_count = 0;
+            const char *  ptr = &conf->data[0];
+            for (long i=0; i < conf->memb_num; i++)
+            {
+                ptr += strlen(ptr) + 1;     // move past the ID
+                ptr += strlen(ptr) + 1;     // move past the name
+                if (*ptr)                   // 0-length IP addr indicates an ARB
+                    non_arb_memb_count += 1;
+                ptr += strlen(ptr) + 1;     // move past the IP address
+                ptr += sizeof(gcs_seqno_t); // move past the gcs_seqno_t
+            }
+            conn->non_arb_memb_count = non_arb_memb_count;
 
             _set_fc_limits (conn);
 
@@ -1170,6 +1188,7 @@ _check_recv_queue_growth (gcs_conn_t* conn, ssize_t size)
         ret = gu_mutex_lock(&conn->fc_lock);
         if (!ret) {
             ret = gcs_fc_stop_end(conn);
+            gu_info("SST entering flow control");
         }
         else {
             gu_fatal("failed to lock FC mutex");
@@ -1269,6 +1288,14 @@ _close(gcs_conn_t* conn, bool join_recv_thread)
 static void *gcs_recv_thread (void *arg)
 {
     gcs_conn_t* conn = (gcs_conn_t*)arg;
+
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_INIT,
+                       WSREP_PFS_INSTR_TAG_RECEIVER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
+
     ssize_t     ret  = -ECONNABORTED;
 
     // To avoid race between gcs_open() and the following state check in while()
@@ -1432,6 +1459,14 @@ static void *gcs_recv_thread (void *arg)
         (void)_close(conn, false);
     }
     gu_info ("RECV thread exiting %d: %s", ret, strerror(-ret));
+
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_DESTROY,
+                       WSREP_PFS_INSTR_TAG_RECEIVER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
+
     return NULL;
 }
 
@@ -1463,7 +1498,7 @@ long gcs_open (gcs_conn_t* conn, const char* channel, const char* url,
                 gcs_fifo_lite_open(conn->repl_q);
                 gu_fifo_open(conn->recv_q);
                 gcs_shift_state (conn, GCS_CONN_OPEN);
-                gu_info ("Opened channel '%s'", channel);
+                gu_debug ("Opened channel '%s'", channel);
                 conn->inner_close_count = 0;
                 conn->outer_close_count = 0;
                 goto out;
@@ -2074,6 +2109,11 @@ gcs_get_stats (gcs_conn_t* conn, struct gcs_stats* stats)
     stats->fc_ssent    = conn->stats_fc_stop_sent;
     stats->fc_csent    = conn->stats_fc_cont_sent;
     stats->fc_received = conn->stats_fc_received;
+
+    stats->fc_lower_limit = conn->lower_limit;
+    stats->fc_upper_limit = conn->upper_limit;
+
+    stats->fc_status = conn->stop_sent() > 0 ? 1 : 0;
 }
 
 void
@@ -2084,6 +2124,15 @@ gcs_flush_stats(gcs_conn_t* conn)
     conn->stats_fc_stop_sent = 0;
     conn->stats_fc_cont_sent = 0;
     conn->stats_fc_received  = 0;
+}
+
+extern void
+gcs_fetch_pfs_info (gcs_conn_t* conn, wsrep_node_info_t* entries, uint32_t size)
+{
+    if (conn->state < GCS_CONN_CLOSED)
+    {
+        gcs_core_fetch_pfs_info(conn->core, entries, size);
+    }
 }
 
 void gcs_get_status(gcs_conn_t* conn, gu::Status& status)

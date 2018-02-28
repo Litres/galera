@@ -24,6 +24,9 @@
 #include <unistd.h>
 #include <stdio.h>
 
+#include <wsrep_api.h>
+
+
 /*! @typedef @brief Sequence number type. */
 typedef int64_t gcs_seqno_t;
 
@@ -441,6 +444,9 @@ struct gcs_stats
     int       send_q_len;     //! current send queue length
     int       send_q_len_max; //! maximum send queue length
     int       send_q_len_min; //! minimum send queue length
+    long      fc_lower_limit; //! Flow-control interval lower limit
+    long      fc_upper_limit; //! Flow-control interval upper limit
+    int       fc_status;      //! Flow-control status (ON=1/OFF=0)
     gcs_backend_stats_t backend_stats; //! backend stats.
 };
 
@@ -452,6 +458,9 @@ extern void gcs_flush_stats(gcs_conn_t *conn);
 void gcs_get_status(gcs_conn_t* conn, gu::Status& status);
 
 extern void gcs_join_notification(gcs_conn_t *conn);
+
+extern void
+gcs_fetch_pfs_info (gcs_conn_t* conn, wsrep_node_info_t* entries, uint32_t size);
 
 /*! A node with this name will be treated as a stateless arbitrator */
 #define GCS_ARBITRATOR_NAME "garb"

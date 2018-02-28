@@ -49,7 +49,11 @@ namespace gcache
                             gu::UUID&          gid,
                             bool const         recover)
     :
+#ifdef HAVE_PSI_INTERFACE
+        fd_        (name, WSREP_PFS_INSTR_TAG_RINGBUFFER_FILE, check_size(size)),
+#else
         fd_        (name, check_size(size)),
+#endif /* HAVE_PSI_INTERFACE */
         mmap_      (fd_),
         preamble_  (static_cast<char*>(mmap_.ptr)),
         header_    (reinterpret_cast<int64_t*>(preamble_ + PREAMBLE_LEN)),
@@ -61,6 +65,7 @@ namespace gcache
                     sizeof(BufferHeader)),
         seqno2ptr_ (seqno2ptr),
         gid_       (gid),
+        freeze_purge_at_seqno_(SEQNO_ILL),
         size_cache_(end_ - start_ - sizeof(BufferHeader)),
         size_free_ (size_cache_),
         size_used_ (0),
@@ -101,6 +106,10 @@ namespace gcache
     {
         for (seqno2ptr_t::iterator i(i_begin); i != i_end;)
         {
+            /* Skip purge from this seqno onwards. */
+            if (skip_purge(i->first))
+                return false;
+
             seqno2ptr_t::iterator j(i); ++i;
             BufferHeader* const bh (ptr2BH (j->second));
 

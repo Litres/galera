@@ -27,7 +27,7 @@ void gcomm::PC::handle_up(const void* cid, const Datagram& rb,
         ViewState vst(const_cast<UUID&>(uuid()),
                       const_cast<View&>(um.view()),
                       conf_);
-        log_info << "save pc into disk";
+        log_info << "Save the discovered primary-component to disk";
         vst.write_file();
     }
     send_up(rb, um);
@@ -124,6 +124,7 @@ void gcomm::PC::connect(bool start_prim)
 
         if (try_until < gu::datetime::Date::now())
         {
+            log_info << "announce period timed out (pc.announce_timeout)";
             break;
         }
     }
@@ -155,7 +156,7 @@ void gcomm::PC::connect(bool start_prim)
             pstack_.pop_proto(pc_);
             pstack_.pop_proto(evs_);
             pstack_.pop_proto(gmcast_);
-            gu_throw_error(ETIMEDOUT) << "failed to reach primary view";
+            gu_throw_error(ETIMEDOUT) << "failed to reach primary view (pc.wait_prim_timeout)";
         }
     }
 
@@ -250,13 +251,15 @@ gcomm::PC::PC(Protonet& net, const gu::URI& uri) :
     ViewState vst(rst_uuid_, rst_view_, conf_);
     if (pc_recovery_) {
         if (vst.read_file()) {
-            log_info << "restore pc from disk successfully";
+            log_info << "Restoring primary-component from disk successful";
             restored = true;
         } else {
-            log_info << "restore pc from disk failed";
+            log_info << "Restoring primary-component from disk failed."
+                     << " Either node is booting for first time or re-booting"
+                     << " after a graceful shutdown";
         }
     } else {
-        log_info << "skip pc recovery and remove state file";
+        log_info << "Skip primary-component recovery and remove state file";
         ViewState::remove_file(conf_);
     }
 

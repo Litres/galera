@@ -817,7 +817,11 @@ galera::Certification::Certification(gu::Config& conf, ServiceThd& thd, gcache::
     deps_set_              (),
     service_thd_           (thd),
     gcache_                (gcache),
+#ifdef HAVE_PSI_INTERFACE
+    mutex_                 (WSREP_PFS_INSTR_TAG_CERT_MUTEX),
+#else
     mutex_                 (),
+#endif /* HAVE_PSI_INTERFACE */
     trx_size_warn_count_   (0),
     initial_position_      (-1),
     position_              (-1),
@@ -825,7 +829,11 @@ galera::Certification::Certification(gu::Config& conf, ServiceThd& thd, gcache::
     last_pa_unsafe_        (-1),
     last_preordered_seqno_ (position_),
     last_preordered_id_    (0),
+#ifdef HAVE_PSI_INTERFACE
+    stats_mutex_           (WSREP_PFS_INSTR_TAG_STATS_MUTEX),
+#else
     stats_mutex_           (),
+#endif /* HAVE_PSI_INTERFACE */
     n_certified_           (0),
     deps_dist_             (0),
     cert_interval_         (0),
@@ -842,17 +850,17 @@ galera::Certification::Certification(gu::Config& conf, ServiceThd& thd, gcache::
 
 galera::Certification::~Certification()
 {
-    log_info << "cert index usage at exit "   << cert_index_.size();
-    log_info << "cert trx map usage at exit " << trx_map_.size();
-    log_info << "deps set usage at exit "     << deps_set_.size();
+    log_debug << "cert index usage at exit "   << cert_index_.size();
+    log_debug << "cert trx map usage at exit " << trx_map_.size();
+    log_debug << "deps set usage at exit "     << deps_set_.size();
 
     double avg_cert_interval(0);
     double avg_deps_dist(0);
     size_t index_size(0);
     stats_get(avg_cert_interval, avg_deps_dist, index_size);
-    log_info << "avg deps dist "              << avg_deps_dist;
-    log_info << "avg cert interval "          << avg_cert_interval;
-    log_info << "cert index size "            << index_size;
+    log_debug << "avg deps dist "              << avg_deps_dist;
+    log_debug << "avg cert interval "          << avg_cert_interval;
+    log_debug << "cert index size "            << index_size;
 
     gu::Lock lock(mutex_);
 

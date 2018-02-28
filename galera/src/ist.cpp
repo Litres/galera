@@ -93,10 +93,16 @@ galera::ist::Receiver::Receiver(gu::Config&           conf,
     io_service_   (),
     acceptor_     (io_service_),
     ssl_ctx_      (io_service_, asio::ssl::context::sslv23),
+#ifdef HAVE_PSI_INTERFACE
+    mutex_        (WSREP_PFS_INSTR_TAG_IST_RECEIVER_MUTEX),
+    cond_         (WSREP_PFS_INSTR_TAG_IST_RECEIVER_CONDVAR),
+#else
     mutex_        (),
     cond_         (),
+#endif /* HAVE_PSI_INTERFACE */
     consumers_    (),
     current_seqno_(-1),
+    first_seqno_  (-1),
     last_seqno_   (-1),
     conf_         (conf),
     trx_pool_     (sp),
@@ -144,8 +150,22 @@ galera::ist::Receiver::~Receiver()
 
 extern "C" void* run_receiver_thread(void* arg)
 {
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_INIT,
+                       WSREP_PFS_INSTR_TAG_IST_RECEIVER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
+
     galera::ist::Receiver* receiver(static_cast<galera::ist::Receiver*>(arg));
     receiver->run();
+
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_DESTROY,
+                       WSREP_PFS_INSTR_TAG_IST_RECEIVER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
     return 0;
 }
 
@@ -335,6 +355,7 @@ galera::ist::Receiver::prepare(wsrep_seqno_t first_seqno,
     }
 
     current_seqno_ = first_seqno;
+    first_seqno_   = first_seqno;
     last_seqno_    = last_seqno;
     int err;
     if ((err = gu_thread_create(&thread_, 0, &run_receiver_thread, this)) != 0)
@@ -403,7 +424,8 @@ void galera::ist::Receiver::run()
         /* wait for ready signal from the STR thread */
         {
             gu::Lock lock(mutex_);
-            while (ready_ == false) lock.wait(cond_);
+            while (ready_ == false && interrupted_ == false)
+                lock.wait(cond_);
         }
 
         gu::Progress<wsrep_seqno_t> progress(
@@ -439,14 +461,14 @@ void galera::ist::Receiver::run()
                 progress.update(1);
             }
             gu::Lock lock(mutex_);
-            assert(ready_);
+            assert(ready_ || interrupted_);
             while (consumers_.empty())
             {
-                lock.wait(cond_);
                 if (interrupted_)
                 {
                     goto Intrrupted;
                 }
+                lock.wait(cond_);
             }
             Consumer* cons(consumers_.top());
             consumers_.pop();
@@ -818,6 +840,14 @@ extern "C"
 void* run_async_sender(void* arg)
 {
     galera::ist::AsyncSender* as(reinterpret_cast<galera::ist::AsyncSender*>(arg));
+
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_INIT,
+                       WSREP_PFS_INSTR_TAG_IST_ASYNC_SENDER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
+
     log_info << "async IST sender starting to serve " << as->peer().c_str()
              << " sending " << as->first() << "-" << as->last();
     wsrep_seqno_t join_seqno;
@@ -849,6 +879,13 @@ void* run_async_sender(void* arg)
         log_debug << "async IST sender already removed";
     }
     log_info << "async IST sender served";
+
+#ifdef HAVE_PSI_INTERFACE
+    pfs_instr_callback(WSREP_PFS_INSTR_TYPE_THREAD,
+                       WSREP_PFS_INSTR_OPS_DESTROY,
+                       WSREP_PFS_INSTR_TAG_IST_ASYNC_SENDER_THREAD,
+                       NULL, NULL, NULL);
+#endif /* HAVE_PSI_INTERFACE */
 
     return 0;
 }

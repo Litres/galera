@@ -71,6 +71,7 @@ namespace galera
 
         virtual wsrep_status_t replicate(TrxHandle* trx, wsrep_trx_meta_t*) = 0;
         virtual wsrep_status_t pre_commit(TrxHandle* trx, wsrep_trx_meta_t*) =0;
+        virtual wsrep_status_t interim_commit(TrxHandle* trx) = 0;
         virtual wsrep_status_t post_commit(TrxHandle* trx) = 0;
         virtual wsrep_status_t post_rollback(TrxHandle* trx) = 0;
         virtual wsrep_status_t replay_trx(TrxHandle* trx, void* replay_ctx) = 0;
@@ -113,6 +114,7 @@ namespace galera
 
         virtual const struct wsrep_stats_var* stats_get() = 0;
         virtual void                          stats_reset() = 0;
+        virtual void fetch_pfs_info(wsrep_node_info_t* nodes, uint32_t size) = 0;
         // static void stats_free(struct wsrep_stats_var*) must be declared in
         // the child class
 
